@@ -43,9 +43,9 @@ metadata {
 		command "parameterSetting"
 		command "updateWeather"
 
-		fingerprint profileId: "0104", inClusters: "0000, 0003, 0004, 0201, 0204, 0405", outClusters: "0003, 000A, 0402", manufacturer: "Stelpro", model: "MaestroStat", deviceJoinName: "Stelpro Maestro Thermostat"
-		fingerprint profileId: "0104", inClusters: "0000, 0003, 0004, 0201, 0204, 0405", outClusters: "0003, 000A, 0402", manufacturer: "Stelpro", model: "SORB", deviceJoinName: "Stelpro ORLÉANS Fan Heater"
-		fingerprint profileId: "0104", inClusters: "0000, 0003, 0004, 0201, 0204, 0405", outClusters: "0003, 000A, 0402", manufacturer: "Stelpro", model: "SonomaStyle", deviceJoinName: "Stelpro Sonoma Style Fan Heater"
+		fingerprint profileId: "0104", inClusters: "0000, 0003, 0004, 0201, 0204, 0405", outClusters: "0003, 000A, 0402", manufacturer: "Stelpro", model: "MaestroStat", deviceJoinName: "Stelpro Thermostat" //Stelpro Maestro Thermostat
+		fingerprint profileId: "0104", inClusters: "0000, 0003, 0004, 0201, 0204, 0405", outClusters: "0003, 000A, 0402", manufacturer: "Stelpro", model: "SORB", deviceJoinName: "Stelpro Thermostat", mnmn: "SmartThings", vid: "SmartThings-smartthings-Stelpro_Orleans_Sonoma_Fan_Thermostat" //Stelpro ORLÉANS Fan Heater
+		fingerprint profileId: "0104", inClusters: "0000, 0003, 0004, 0201, 0204, 0405", outClusters: "0003, 000A, 0402", manufacturer: "Stelpro", model: "SonomaStyle", deviceJoinName: "Stelpro Thermostat", mnmn: "SmartThings", vid: "SmartThings-smartthings-Stelpro_Orleans_Sonoma_Fan_Thermostat" //Stelpro Sonoma Style Fan Heater
 	}
 
 	// simulator metadata
@@ -54,11 +54,12 @@ metadata {
 	preferences {
 		section {
 			input("lock", "enum", title: "Do you want to lock your thermostat's physical keypad?", options: ["No", "Yes"], defaultValue: "No", required: false, displayDuringSetup: false)
-			input("heatdetails", "enum", title: "Do you want a detailed operating state notification?", options: ["No", "Yes"], defaultValue: "No", required: false, displayDuringSetup: true)
+			input("heatdetails", "enum", title: "Do you want to see detailed operating state events in the activity history? There may be many.", options: ["No", "Yes"], defaultValue: "No", required: false, displayDuringSetup: true)
 		}
 		section {
-			input title: "Outdoor Temperature", description: "To get the current outdoor temperature to display on your thermostat enter your zip code or postal code below and make sure that your SmartThings location has a Geolocation configured (typically used for geofencing).", displayDuringSetup: false, type: "paragraph", element: "paragraph"
-			input("zipcode", "text", title: "ZipCode (Outdoor Temperature)", description: "[Do not use space](Blank = No Forecast)")
+			input(title: "Outdoor Temperature", description: "To get the current outdoor temperature to display on your thermostat enter your zip code or postal code below and make sure that your SmartThings location has a Geolocation configured (typically used for geofencing). Do not use space. If you don't want a forecast, leave it blank.",
+					displayDuringSetup: false, type: "paragraph", element: "paragraph")
+			input("zipcode", "text", title: "ZipCode (Outdoor Temperature)", description: "")
 		}
 		/*
 		input("away_setpoint", "enum", title: "Away setpoint", options: ["5", "5.5", "6", "6.5", "7", "7.5", "8", "8.5", "9", "9.5", "10", "10.5", "11", "11.5", "12", "12.5", "13", "13.5", "14", "14.5", "15", "5.5", "15.5", "16", "16.5", "17", "17.5", "18", "18.5", "19", "19.5", "20", "20.5", "21", "21.5", "22", "22.5", "23", "24", "24.5", "25", "25.5", "26", "26.5", "27", "27.5", "28", "28.5", "29", "29.5", "30"], defaultValue: "21", required: true)
@@ -279,9 +280,9 @@ def parse(String description) {
 				}
 
 				// If the user does not want to see the Idle and Heating events in the event history,
-				// don't show them. Otherwise, don't show them more frequently than 30 seconds.
+				// don't show them. Otherwise, don't show them more frequently than 5 minutes.
 				if (settings.heatdetails == "No" ||
-					!secondsPast(device.currentState("thermostatOperatingState")?.getLastUpdated(), 30)) {
+						!secondsPast(device.currentState("thermostatOperatingState")?.getLastUpdated(), 60 * 5)) {
 					map.displayed = false
 				}
 			}
@@ -309,6 +310,9 @@ def parse(String description) {
 	return result
 }
 
+private getFREEZE_ALARM_TEMP() { getTemperatureScale() == "C" ? 0 : 32 }
+private getHEAT_ALARM_TEMP() { getTemperatureScale() == "C" ? 50 : 122 }
+
 def handleTemperature(descMap) {
 	def map = [:]
 	def intVal = Integer.parseInt(descMap.value, 16)
@@ -317,9 +321,11 @@ def handleTemperature(descMap) {
 	if (intVal == 0x7ffd) { // Freeze Alarm
 		map.name = "temperatureAlarm"
 		map.value = "freeze"
+		sendEvent(name: "temperature", value: FREEZE_ALARM_TEMP, unit: getTemperatureScale())
 	} else if (intVal == 0x7fff) { // Overheat Alarm
 		map.name = "temperatureAlarm"
 		map.value = "heat"
+		sendEvent(name: "temperature", value: HEAT_ALARM_TEMP, unit: getTemperatureScale())
 	} else if (intVal == 0x8000) { // Temperature Sensor Error
 		map.descriptionText = "Received a temperature error"
 	} else {
@@ -330,19 +336,45 @@ def handleTemperature(descMap) {
 		map.value = getTemperature(intVal)
 		map.unit = getTemperatureScale()
 
-		// Handle cases where we need to update the temperature alarm state given certain temperatures
-		// Account for a f/w bug where the freeze alarm doesn't trigger at 0C
-		if (map.value < (map.unit == "C" ? 0 : 32)) {
-			log.debug "EARLY FREEZE ALARM @ $map.value $map.unit (raw $intVal)"
-			sendEvent(name: "temperatureAlarm", value: "freeze")
-		}
-		// Overheat alarm doesn't trigger until 80C, but we'll start sending at 50C to match thermostat display
-		else if (map.value >= (map.unit == "C" ? 50 : 122)) {
-			log.debug "EARLY HEAT ALARM @  $map.value $map.unit (raw $intVal)"
-			sendEvent(name: "temperatureAlarm", value: "heat")
-		} else if (device.currentValue("temperatureAlarm") != "cleared") {
-			log.debug "CLEAR ALARM @ $map.value $map.unit (raw $intVal)"
-			sendEvent(name: "temperatureAlarm", value: "cleared")
+		def lastTemp = device.currentValue("temperature")
+		def lastAlarm = device.currentValue("temperatureAlarm")
+		if (lastAlarm != "cleared") {
+			def cleared = false
+
+			if (lastTemp != null) {
+				lastTemp = convertTemperatureIfNeeded(lastTemp, device.currentState("temperature").unit).toFloat()
+				// Check to see if we are coming out of our alarm state and only clear then
+				// NOTE: A thermostat might send us an alarm *before* it has completed sending us previous measurements,
+				// so it might appear that the alarm is no longer valid. We need to check the trajectory of the temperature
+				// to verify this.
+				if ((lastAlarm == "freeze" &&
+						map.value > FREEZE_ALARM_TEMP &&
+						lastTemp < map.value) ||
+					(lastAlarm == "heat" &&
+						map.value < HEAT_ALARM_TEMP &&
+						lastTemp > map.value)) {
+							log.debug "Clearing $lastAlarm temp alarm"
+							sendEvent(name: "temperatureAlarm", value: "cleared")
+							cleared = true
+				}
+			}
+
+			// Check to see if this temperature event is still a "catch up" event to our alarm temperature threshold, and if it is
+			// just mask it.
+			if (!cleared &&
+					((lastAlarm == "freeze" && map.value > FREEZE_ALARM_TEMP) ||
+					 (lastAlarm == "heat" && map.value < HEAT_ALARM_TEMP))) {
+				log.debug "Hiding stale temperature ${map.value} because of ${lastAlarm} alarm"
+				map.value = (lastAlarm == "freeze") ? FREEZE_ALARM_TEMP : HEAT_ALARM_TEMP
+			}
+		} else { // If we came out of an alarm and went back in to it, we seem to hit an edge case where we don't get the new alarm
+			if (map.value <= FREEZE_ALARM_TEMP) {
+				log.debug "EARLY FREEZE ALARM @ $map.value $map.unit (raw $intVal)"
+				sendEvent(name: "temperatureAlarm", value: "freeze")
+			} else if (map.value >= HEAT_ALARM_TEMP) {
+				log.debug "EARLY HEAT ALARM @  $map.value $map.unit (raw $intVal)"
+				sendEvent(name: "temperatureAlarm", value: "heat")
+			}
 		}
 	}
 
@@ -411,16 +443,28 @@ def ping() {
 }
 
 def poll() {
-	def requests = []
 	log.debug "poll()"
+}
+
+def refresh() {
+	def requests = []
+	log.debug "refresh()"
 
 	requests += updateWeather()
 	requests += zigbee.readAttribute(THERMOSTAT_CLUSTER, ATTRIBUTE_LOCAL_TEMP)
-	requests += zigbee.readAttribute(zigbee.RELATIVE_HUMIDITY_CLUSTER, ATTRIBUTE_HUMIDITY_INFO)
+
+	if (!isOrleansOrSonoma()) {
+		requests += zigbee.readAttribute(zigbee.RELATIVE_HUMIDITY_CLUSTER, ATTRIBUTE_HUMIDITY_INFO)
+	}
+
 	requests += zigbee.readAttribute(THERMOSTAT_CLUSTER, ATTRIBUTE_PI_HEATING_STATE)
 	requests += zigbee.readAttribute(THERMOSTAT_CLUSTER, ATTRIBUTE_HEAT_SETPOINT)
 	requests += zigbee.readAttribute(THERMOSTAT_UI_CONFIG_CLUSTER, ATTRIBUTE_TEMP_DISP_MODE)
 	requests += zigbee.readAttribute(THERMOSTAT_UI_CONFIG_CLUSTER, ATTRIBUTE_KEYPAD_LOCKOUT)
+
+	if (!isOrleansOrSonoma()) {
+		requests += zigbee.readAttribute(zigbee.RELATIVE_HUMIDITY_CLUSTER, ATTRIBUTE_HUMIDITY_INFO)
+	}
 
 	requests
 }
@@ -445,10 +489,6 @@ def getTemperature(value) {
 			return rounded
 		}
 	}
-}
-
-def refresh() {
-	poll()
 }
 
 def setHeatingSetpoint(preciseDegrees) {
@@ -546,16 +586,11 @@ def configure() {
 	requests += zigbee.configureReporting(THERMOSTAT_UI_CONFIG_CLUSTER, ATTRIBUTE_TEMP_DISP_MODE, DataType.ENUM8, 1, 0, 1)
 	requests += zigbee.configureReporting(THERMOSTAT_UI_CONFIG_CLUSTER, ATTRIBUTE_KEYPAD_LOCKOUT, DataType.ENUM8, 1, 0, 1)
 
-	requests += zigbee.configureReporting(zigbee.RELATIVE_HUMIDITY_CLUSTER, ATTRIBUTE_HUMIDITY_INFO, DataType.UINT16, 10, 300, 1)
-
+	if (!isOrleansOrSonoma()) {
+		requests += zigbee.configureReporting(zigbee.RELATIVE_HUMIDITY_CLUSTER, ATTRIBUTE_HUMIDITY_INFO, DataType.UINT16, 10, 300, 1)
+	}
 	// Read the configured variables
-	requests += zigbee.readAttribute(zigbee.RELATIVE_HUMIDITY_CLUSTER, ATTRIBUTE_HUMIDITY_INFO)
-	requests += zigbee.readAttribute(THERMOSTAT_CLUSTER, ATTRIBUTE_LOCAL_TEMP)
-	requests += zigbee.readAttribute(THERMOSTAT_CLUSTER, ATTRIBUTE_HEAT_SETPOINT)
-	requests += zigbee.readAttribute(THERMOSTAT_CLUSTER, ATTRIBUTE_PI_HEATING_STATE)
-	requests += zigbee.readAttribute(THERMOSTAT_UI_CONFIG_CLUSTER, ATTRIBUTE_TEMP_DISP_MODE)
-	requests += zigbee.readAttribute(THERMOSTAT_UI_CONFIG_CLUSTER, ATTRIBUTE_KEYPAD_LOCKOUT)
-	requests += zigbee.readAttribute(zigbee.RELATIVE_HUMIDITY_CLUSTER, ATTRIBUTE_HUMIDITY_INFO)
+	requests += refresh()
 
 	requests
 }
@@ -617,4 +652,8 @@ private Boolean secondsPast(timestamp, seconds) {
 		}
 	}
 	return (now() - timestamp) > (seconds * 1000)
+}
+
+private Boolean isOrleansOrSonoma() {
+	device.getDataValue("model") == "SORB" || device.getDataValue("model") == "SonomaStyle"
 }
